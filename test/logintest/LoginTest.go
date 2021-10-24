@@ -7,7 +7,8 @@ import (
 )
 
 func main() {
-	session, err := esnapi.MakeESNSession("39.100.5.139:3003", "rock", "000112rock.,.", 5000)
+	esnapi.DebugMode = true
+	session, err := esnapi.MakeESNSession("39.100.5.139:3003", "root", "turtle", 5000)
 	if err != nil {
 		panic(err)
 	}
@@ -19,11 +20,6 @@ func main() {
 
 	// session.RequestNotification(0, 100)
 	err = session.PushNotification("root,rockchin", "TestMessage", "TheFirstNotificationSendByGolangAPI 哈哈哈哈")
-	if err != nil {
-		panic(err)
-	}
-
-	err = session.RemoveAccount("rock", true)
 	if err != nil {
 		panic(err)
 	}

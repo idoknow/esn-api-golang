@@ -1,37 +1,27 @@
 package esnapi
 
 import (
-	"crypto/md5"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/binary"
-	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
-	mrand "math/rand"
 	"net"
-	"strconv"
+	"strings"
 	"sync"
-	"time"
+
+	"github.com/go-basic/uuid"
 )
 
-type ESNSession struct {
-	Conn           *net.Conn
-	NtfListener    func(ntf PackRespNotification)
-	LogoutListener func(err PackResult)
-	Protocol       int
-	Privilege      string
-
-	wgMap        map[string]*sync.WaitGroup
-	receivedPack map[string]*Package
-}
-
-func MakeESNSession(addr string, user string, pass string, timeout int) (*ESNSession, error) {
+func MakeESNSession(address string, user string, pass string, timeout int) (*ESNSession, error) {
 	var session ESNSession
-	c, err := net.Dial("tcp", addr)
+	if len(strings.Split(address, ":")) < 2 {
+		address = address + ":3003"
+	}
+	c, err := net.Dial("tcp", address)
 	if err != nil {
 		return nil, err
 	}
@@ -102,6 +92,7 @@ func MakeESNSession(addr string, user string, pass string, timeout int) (*ESNSes
 	session.receivedPack = make(map[string]*Package)
 
 	go session.readLoop()
+	go session.AliveLoop()
 	return &session, nil
 }
 func (session *ESNSession) SetListener(ntfListener func(ntf PackRespNotification), logoutListener func(err PackResult)) {
@@ -166,157 +157,6 @@ func (session *ESNSession) selectPack(token string, in interface{}) error {
 	return err
 }
 
-func (session *ESNSession) RequestNotification(from int, limit int) error {
-	token := randToken()
-	var pack PackRequest
-	pack.From = from
-	pack.Limit = limit
-	pack.Token = token
-	_, err := WritePackage(*session.Conn, pack, 4, "")
-	if err != nil {
-		return err
-	}
-	result := &PackResult{}
-	session.selectPack(token, result)
-
-	if result.Error != "" {
-		return errors.New(result.Error)
-	}
-	return nil
-}
-func (session *ESNSession) PushNotification(target string, title string, content string) error {
-	token := randToken()
-	var pack PackPush
-	pack.Target = target
-	pack.Content = content
-	pack.Title = title
-	pack.Time = time.Now().Format("2006-01-02,15:04:05")
-	pack.Token = token
-	_, err := WritePackage(*session.Conn, pack, 3, "")
-	if err != nil {
-		return err
-	}
-
-	result := &PackResult{}
-	session.selectPack(token, result)
-	if result.Error != "" {
-		return errors.New(result.Error)
-	}
-	return nil
-}
-
-func (session *ESNSession) AddAccount(user string, pass string, privilege string) error {
-	token := randToken()
-	var pack PackAccountOperation
-	pack.Oper = "add"
-	pack.Name = user
-	pack.Pass = pass
-	pack.Token = token
-	pack.Kick = false
-	pack.Priv = privilege
-	_, err := WritePackage(*session.Conn, pack, 7, "")
-	if err != nil {
-		return err
-	}
-
-	result := &PackResult{}
-	session.selectPack(token, result)
-	if result.Error != "" {
-		return errors.New(result.Error)
-	}
-	return nil
-}
-
-func (session *ESNSession) RemoveAccount(user string, kick bool) error {
-	token := randToken()
-	var pack PackAccountOperation
-	pack.Oper = "remove"
-	pack.Kick = kick
-	pack.Name = user
-	pack.Pass = ""
-	pack.Priv = ""
-	pack.Token = token
-	_, err := WritePackage(*session.Conn, pack, 7, "")
-	if err != nil {
-		return err
-	}
-
-	result := &PackResult{}
-	if result.Error != "" {
-		return errors.New(result.Error)
-	}
-	return nil
-}
-
-type PackToken struct {
-	Token string
-}
-
-type PackTest struct { //0 both
-	Integer int
-	Msg     string
-	Token   string
-}
-
-type PackLogin struct { //1 client
-	User  string
-	Pass  string
-	Token string
-}
-
-type PackResult struct { //2 both
-	Result string
-	Error  string
-	Token  string
-}
-
-type PackPush struct { //3 client
-	Target  string
-	Time    string
-	Title   string
-	Content string
-	Token   string
-}
-
-type PackRequest struct { //4 client
-	From  int
-	Limit int
-	Token string
-}
-
-type PackRespNotification struct { //5 server
-	Id      int
-	Target  string
-	Time    string
-	Title   string
-	Content string
-	Source  string
-	Token   string
-}
-
-type PackReqPrivList struct { //6 both
-	Priv  string //not nil when server response
-	Token string
-}
-
-type PackAccountOperation struct { //7 client
-	Oper  string //add/remove
-	Name  string
-	Pass  string
-	Priv  string
-	Kick  bool
-	Token string
-}
-
-type PackReqRSAKey struct { //8 client
-	Token string
-}
-
-type PackRSAPublicKey struct { //9 server
-	PublicKey string
-	Token     string
-}
-
 func WriteInt(n int, conn net.Conn) error {
 	x := int32(n)
 	err := binary.Write(conn, binary.BigEndian, x)
@@ -330,13 +170,6 @@ func ReadInt(conn net.Conn) int {
 	binary.Read(conn, binary.BigEndian, &x)
 
 	return int(x)
-}
-
-type Package struct {
-	Json   string
-	Size   int
-	Code   int
-	Crypto bool
 }
 
 func ReadPackage(conn net.Conn, privateKey string) (*Package, error) {
@@ -412,24 +245,12 @@ func WritePackage(conn net.Conn, obj interface{}, code int, rsakey string) (*Pac
 	return &p, err
 }
 
-var DebugMode = false
-
-func DebugMsg(sub string, msg string) {
-	if DebugMode {
-		fmt.Println("Debug-"+sub, msg)
-	}
-}
-
 func RSA_encrypter(key string, msg []byte) ([]byte, error) {
-	//下面的操作是与创建秘钥保存时相反的
-	//pem解码
 	block, _ := pem.Decode([]byte(key))
-	//x509解码,得到一个interface类型的pub
 	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
 	if err != nil {
 		return nil, err
 	}
-	//加密操作,需要将接口类型的pub进行类型断言得到公钥类型
 	cipherText, err := rsa.EncryptPKCS1v15(rand.Reader, pub.(*rsa.PublicKey), msg)
 	if err != nil {
 		return nil, err
@@ -442,23 +263,11 @@ func RSA_decrypter(key string, cipherText []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	//二次解码完毕，调用解密函数
 	return rsa.DecryptPKCS1v15(rand.Reader, PrivateKey, cipherText)
 
 }
 
 func randToken() string {
-	mrand.Seed(time.Now().Unix())
-	s := time.Now().String() + ":golang:" + strconv.Itoa(mrand.Intn(10000))
-	return MD5(s)
-}
-
-func MD5Bytes(s []byte) string {
-	ret := md5.Sum(s)
-	return hex.EncodeToString(ret[:])
-}
-
-//计算字符串MD5值
-func MD5(s string) string {
-	return MD5Bytes([]byte(s))
+	uuid := uuid.New()
+	return uuid
 }
