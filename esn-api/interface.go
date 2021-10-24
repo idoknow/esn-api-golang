@@ -6,7 +6,7 @@ import (
 )
 
 /*Count notification sent to current account*/
-func (session *ESNSession) countNotification(from int, to int) (int, error) {
+func (session *ESNSession) CountNotification(from int, to int) (int, error) {
 	token := randToken()
 	var pack PackCount
 	pack.From = from
