@@ -95,9 +95,14 @@ func MakeESNSession(address string, user string, pass string, timeout int) (*ESN
 	go session.AliveLoop()
 	return &session, nil
 }
-func (session *ESNSession) SetListener(ntfListener func(ntf PackRespNotification), logoutListener func(err PackResult)) {
-	session.NtfListener = ntfListener
-	session.LogoutListener = logoutListener
+
+type ISessionListener interface {
+	NotificationReceived(ntf PackRespNotification)
+	SessionLogout(err PackResult)
+}
+
+func (session *ESNSession) SetListener(sessionListener ISessionListener) {
+	session.SessionListener = sessionListener
 }
 
 func (session *ESNSession) readLoop() {
@@ -117,22 +122,22 @@ func (session *ESNSession) readLoop() {
 
 		//check notification
 		if p.Code == 5 { //notification received
-			if session.NtfListener != nil {
+			if session.SessionListener != nil {
 				respNoti := &PackRespNotification{}
 				err = json.Unmarshal([]byte(p.Json), respNoti)
 				if err != nil {
 					continue
 				}
-				session.NtfListener(*respNoti)
+				session.SessionListener.NotificationReceived(*respNoti)
 			}
 		} else if tokenPack.Token == "LogoutPackage" { //logout
-			if session.LogoutListener != nil {
+			if session.SessionListener != nil {
 				logout := &PackResult{}
 				err = json.Unmarshal([]byte(p.Json), logout)
 				if err != nil {
 					continue
 				}
-				session.LogoutListener(*logout)
+				session.SessionListener.SessionLogout(*logout)
 			}
 		} else {
 			session.receivedPack[tokenPack.Token] = p

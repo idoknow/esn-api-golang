@@ -13,11 +13,10 @@ type Package struct {
 }
 
 type ESNSession struct {
-	Conn           *net.Conn
-	NtfListener    func(ntf PackRespNotification)
-	LogoutListener func(err PackResult)
-	Protocol       int
-	Privilege      string
+	Conn            *net.Conn
+	SessionListener ISessionListener
+	Protocol        int
+	Privilege       string
 
 	wgMap        map[string]*sync.WaitGroup
 	receivedPack map[string]*Package
